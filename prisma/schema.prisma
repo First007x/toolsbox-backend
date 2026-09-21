@@ -1,0 +1,122 @@
+// ไฟล์: prisma/schema.prisma
+
+generator client {
+provider = "prisma-client-js"
+}
+
+datasource db {
+provider = "postgresql"
+url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------
+// 1. Core Entities
+// ----------------------------------------------------------------------
+
+model Tool {
+id          String   @id @default(uuid())
+code        String   @unique // เช่น 'PDF_MERGE', 'IMG_REMOVE_BG'
+name        String
+description String?
+category    String   // MULTIMEDIA, DOCUMENT, UTILITY, CODE
+isActive    Boolean  @default(true) @map("is_active")
+createdAt   DateTime @default(now()) @map("created_at")
+updatedAt   DateTime @updatedAt @map("updated_at")
+
+// Relations
+jobs        ProcessingJob[]
+usages      UsageHistory[]
+
+@@map("tools")
+}
+
+// ----------------------------------------------------------------------
+// 2. Processing & File Entities
+// ----------------------------------------------------------------------
+
+model ProcessingJob {
+id           String   @id @default(uuid())
+toolCode     String   @map("tool_code")
+
+// Security: อ้างอิง User ID จาก Core System ที่รับมาจาก Gateway
+userId       String   @map("user_id")
+
+status       String   // PENDING, PROCESSING, COMPLETED, FAILED
+resultUrl    String?  @map("result_url")
+errorMessage String?  @map("error_message")
+createdAt    DateTime @default(now()) @map("created_at")
+updatedAt    DateTime @updatedAt @map("updated_at")
+
+// Relations
+tool         Tool     @relation(fields: [toolCode], references: [code])
+files        FileMetadata[]
+
+@@map("processing_jobs")
+}
+
+// Security Directive: จัดเก็บข้อมูลไฟล์แยกต่างหากเพื่อการทำ Validation และ Cleanup
+model FileMetadata {
+id           String   @id @default(uuid())
+jobId        String?  @map("job_id")
+userId       String   @map("user_id")
+
+originalName String   @map("original_name") // ชื่อเดิม (เก็บไว้แสดงผลเท่านั้น)
+safeName     String   @map("safe_name")     // ชื่อที่ระบบสร้างให้ (ป้องกัน Path Traversal/Injection)
+storagePath  String   @map("storage_path")  // Path จริงใน Storage/Local
+
+mimeType     String   @map("mime_type")
+extension    String
+sizeBytes    BigInt   @map("size_bytes")    // ใช้ BigInt ป้องกันไฟล์ขนาดใหญ่เกิน (Oversized)
+
+isProcessed  Boolean  @default(false) @map("is_processed")
+expiresAt    DateTime? @map("expires_at")   // สำหรับทำ File Cleanup/TTL
+createdAt    DateTime @default(now()) @map("created_at")
+
+// Relations
+job          ProcessingJob? @relation(fields: [jobId], references: [id], onDelete: SetNull)
+
+@@map("file_metadata")
+}
+
+// ----------------------------------------------------------------------
+// 3. Audit & Security Entities
+// ----------------------------------------------------------------------
+
+// สำหรับจัดการ Permission ย่อยๆ ภายใน Tools Box (เช่น ใครใช้ Code Editor ได้บ้าง)
+model LocalPermission {
+id          String   @id @default(uuid())
+userId      String   @map("user_id") // อ้างอิง Core System ID
+action      String   // เช่น 'USE_CODE_EDITOR', 'BYPASS_FILE_LIMIT'
+isAllowed   Boolean  @default(true) @map("is_allowed")
+createdAt   DateTime @default(now()) @map("created_at")
+
+@@unique([userId, action])
+@@map("local_permissions")
+}
+
+// เก็บสถิติการใช้งานเพื่อทำ Rate Limit หรือ Report
+model UsageHistory {
+id          String   @id @default(uuid())
+userId      String   @map("user_id")
+toolCode    String   @map("tool_code")
+ipAddress   String?  @map("ip_address") // เก็บ IP ที่มาจาก Gateway (X-Forwarded-For)
+userAgent   String?  @map("user_agent")
+createdAt   DateTime @default(now()) @map("created_at")
+
+// Relations
+tool        Tool     @relation(fields: [toolCode], references: [code])
+
+@@map("usage_histories")
+}
+
+// บันทึก Security Events (เช่น การพยายามอัปโหลดไฟล์อันตราย)
+model AuditLog {
+id          String   @id @default(uuid())
+userId      String?  @map("user_id")
+action      String
+details     Json?    // เก็บข้อมูลรายละเอียดเชิงลึก
+severity    String   // INFO, WARNING, CRITICAL
+createdAt   DateTime @default(now()) @map("created_at")
+
+@@map("audit_logs")
+}
