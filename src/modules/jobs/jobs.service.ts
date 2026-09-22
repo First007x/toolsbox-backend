@@ -14,12 +14,15 @@ import sharp from "sharp";
 
 import * as fs from "fs/promises";
 import * as path from "path";
+import { PDFDocument } from 'pdf-lib';
 
 import {
   CreateImageConvertJobDto,
   CreateImageCompressJobDto,
   FormatCodeJobDto,
   CreateRemoveBgJobDto,
+  CreatePdfMergeJobDto,
+  CreatePdfSplitJobDto,
 } from "./dto/create-job.dto";
 
 import * as beautify from "js-beautify";
@@ -32,7 +35,7 @@ export class JobsService implements OnModuleInit {
     "processed"
   );
 
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: PrismaService) { }
 
   // ========================================
   // สร้างโฟลเดอร์สำหรับไฟล์ Processed
@@ -426,8 +429,8 @@ export class JobsService implements OnModuleInit {
               autoFixMessage =
                 fixMessages.length > 0
                   ? `พบจุดผิดพลาด! ระบบช่วยเติม ${fixMessages.join(
-                      ", "
-                    )} ให้เรียบร้อยแล้ว`
+                    ", "
+                  )} ให้เรียบร้อยแล้ว`
                   : "ระบบตรวจพบข้อผิดพลาดและสามารถซ่อมแซม JSON ได้";
             } catch {
               // ซ่อมแล้วแต่ JSON ยังไม่ถูกต้อง
@@ -530,7 +533,7 @@ export class JobsService implements OnModuleInit {
   // 4. 🚀 ระบบลบพื้นหลังรูปภาพ
   // Remove BG - Mockup
   // ========================================
- // ... existing code ...
+  // ... existing code ...
   // --- 4. 🚀 ระบบลบพื้นหลังรูปภาพ (Remove BG - ของจริง) ---
   async removeBackground(dto: CreateRemoveBgJobDto, userId: string) {
     const { fileId } = dto;
@@ -557,7 +560,7 @@ export class JobsService implements OnModuleInit {
 
       // 1. อ่านไฟล์รูปภาพต้นฉบับจากฮาร์ดดิสก์
       const fileBuffer = await fs.readFile(fileRecord.storagePath);
-      
+
       // 2. แปลงไฟล์ภาพเป็นรหัส Base64 (วิธีนี้ชัวร์และเสถียรที่สุดในการส่งข้ามเซิร์ฟเวอร์)
       const base64Image = fileBuffer.toString('base64');
 
@@ -582,7 +585,7 @@ export class JobsService implements OnModuleInit {
       // 4. รับไฟล์ภาพที่ตัดแล้วกลับมา (เป็น Binary Buffer)
       const arrayBuffer = await response.arrayBuffer();
       const resultBuffer = Buffer.from(arrayBuffer);
-      
+
       // 5. บันทึกไฟล์ PNG ลงในฮาร์ดดิสก์ของเรา
       await fs.writeFile(outputPath, resultBuffer);
 
@@ -604,6 +607,189 @@ export class JobsService implements OnModuleInit {
       });
       // โยน Error กลับไปให้หน้าเว็บเห็นชัดๆ ว่าเกิดจากอะไร
       throw new InternalServerErrorException(`AI ตัดพื้นหลังล้มเหลว: ${error.message}`);
+    }
+
+
+  }
+
+  async mergePdf(
+    dto: CreatePdfMergeJobDto,
+    userId: string,
+  ) {
+    const { fileIds } = dto;
+
+    const files = await this.prisma.fileMetadata.findMany({
+      where: {
+        id: {
+          in: fileIds,
+        },
+        userId: userId,
+      },
+    });
+
+    if (files.length !== fileIds.length) {
+      throw new BadRequestException(
+        'พบไฟล์ที่ไม่มีในระบบ หรือคุณไม่มีสิทธิ์เข้าถึง',
+      );
+    }
+
+    const orderedFiles = fileIds.map(
+      (id) => files.find((file) => file.id === id)!,
+    );
+
+    const job = await this.prisma.processingJob.create({
+      data: {
+        toolCode: 'PDF_MERGE',
+        userId: userId,
+        status: 'PROCESSING',
+      },
+    });
+
+    try {
+      const mergedPdf = await PDFDocument.create();
+
+      for (const file of orderedFiles) {
+        const fileBuffer = await fs.readFile(
+          file.storagePath,
+        );
+
+        const pdfDoc =
+          await PDFDocument.load(fileBuffer);
+
+        const copiedPages =
+          await mergedPdf.copyPages(
+            pdfDoc,
+            pdfDoc.getPageIndices(),
+          );
+
+        copiedPages.forEach((page) => {
+          mergedPdf.addPage(page);
+        });
+      }
+
+      const pdfBytes = await mergedPdf.save();
+
+      const newFileName =
+        `merged-document-${Date.now()}.pdf`;
+
+      const outputPath = path.join(
+        this.processedDir,
+        newFileName,
+      );
+
+      await fs.writeFile(
+        outputPath,
+        pdfBytes,
+      );
+
+      const updatedJob =
+        await this.prisma.processingJob.update({
+          where: {
+            id: job.id,
+          },
+          data: {
+            status: 'COMPLETED',
+            resultUrl:
+              `/uploads/processed/${newFileName}`,
+          },
+        });
+
+      await this.prisma.fileMetadata.updateMany({
+        where: {
+          id: {
+            in: fileIds,
+          },
+        },
+        data: {
+          isProcessed: true,
+          jobId: job.id,
+        },
+      });
+
+      return {
+        jobId: updatedJob.id,
+        status: updatedJob.status,
+        resultUrl: updatedJob.resultUrl,
+      };
+
+    } catch (error: any) {
+
+      await this.prisma.processingJob.update({
+        where: {
+          id: job.id,
+        },
+        data: {
+          status: 'FAILED',
+          errorMessage: error.message,
+        },
+      });
+
+      throw new InternalServerErrorException(
+        `รวมไฟล์ PDF ล้มเหลว: ${error.message}`,
+      );
+    }
+  }
+
+  // 🚀 ----------------------------------------------------
+  // ระบบแยกหน้าไฟล์ PDF (Split PDF)
+  // ให้เอาโค้ดนี้ไปวางต่อท้ายฟังก์ชัน mergePdf ในคลาส JobsService ครับ
+  // -------------------------------------------------------
+  async splitPdf(dto: CreatePdfSplitJobDto, userId: string) {
+    const { fileId, pages } = dto;
+
+    const file = await this.prisma.fileMetadata.findFirst({
+      where: { id: fileId, userId: userId }
+    });
+
+    if (!file) throw new NotFoundException('ไม่พบไฟล์ที่ต้องการแยกหน้า');
+
+    const job = await this.prisma.processingJob.create({
+      data: { toolCode: 'PDF_SPLIT', userId: userId, status: 'PROCESSING' }
+    });
+
+    try {
+      const fileBuffer = await fs.readFile(file.storagePath);
+      const pdfDoc = await PDFDocument.load(fileBuffer);
+      const totalPages = pdfDoc.getPageCount();
+
+      // 1. แปลงเลขหน้าให้ตรงกับ Index ของระบบ (เริ่มที่ 0) และกรองหน้าที่ไม่มีอยู่ออก
+      const validIndices = pages
+        .filter(p => p > 0 && p <= totalPages)
+        .map(p => p - 1);
+
+      if (validIndices.length === 0) {
+        throw new BadRequestException('ไม่พบหน้าที่ระบุในเอกสารนี้');
+      }
+
+      // 2. สร้าง PDF ใหม่ และก๊อปปี้เฉพาะหน้าที่เลือกมาใส่
+      const newPdf = await PDFDocument.create();
+      const copiedPages = await newPdf.copyPages(pdfDoc, validIndices);
+      copiedPages.forEach((page) => newPdf.addPage(page));
+
+      // 3. บันทึกเป็นไฟล์ใหม่
+      const pdfBytes = await newPdf.save();
+      const newFileName = `split-document-${Date.now()}.pdf`;
+      const outputPath = path.join(this.processedDir, newFileName);
+      await fs.writeFile(outputPath, pdfBytes);
+
+      // 4. อัปเดตสถานะงาน
+      const updatedJob = await this.prisma.processingJob.update({
+        where: { id: job.id },
+        data: { status: 'COMPLETED', resultUrl: `/uploads/processed/${newFileName}` }
+      });
+
+      await this.prisma.fileMetadata.update({
+        where: { id: fileId },
+        data: { isProcessed: true, jobId: job.id }
+      });
+
+      return { jobId: updatedJob.id, status: updatedJob.status, resultUrl: updatedJob.resultUrl };
+    } catch (error: any) {
+      await this.prisma.processingJob.update({
+        where: { id: job.id },
+        data: { status: 'FAILED', errorMessage: error.message }
+      });
+      throw new InternalServerErrorException(`แยกหน้าไฟล์ PDF ล้มเหลว: ${error.message}`);
     }
   }
 }

@@ -1,7 +1,7 @@
 // ไฟล์: toolsbox-backend/src/modules/jobs/jobs.controller.ts
 import { Controller, Post, Body, UseGuards, Req } from '@nestjs/common';
 import { JobsService } from './jobs.service';
-import { CreateImageConvertJobDto, CreateImageCompressJobDto, FormatCodeJobDto, CreateRemoveBgJobDto } from './dto/create-job.dto';
+import { CreateImageConvertJobDto, CreateImageCompressJobDto,CreatePdfSplitJobDto, FormatCodeJobDto, CreateRemoveBgJobDto, CreatePdfMergeJobDto } from './dto/create-job.dto';
 import { GatewayAuthGuard } from '../../common/guards/gateway-auth.guard';
 
 @Controller('jobs')
@@ -45,5 +45,21 @@ export class JobsController {
   ) {
     const userId = req.user.id;
     return this.jobsService.removeBackground(dto, userId);
+  }
+
+ @Post('pdf-merge')
+async mergePdf(
+  @Body() dto: CreatePdfMergeJobDto,
+  @Req() req: any,
+) {
+  const userId = req.user.id;
+
+  return this.jobsService.mergePdf(dto, userId);
+}
+
+@Post('pdf-split')
+  async splitPdf(@Body() dto: CreatePdfSplitJobDto, @Req() req: any) {
+    const userId = req.user.id;
+    return this.jobsService.splitPdf(dto, userId);
   }
 }

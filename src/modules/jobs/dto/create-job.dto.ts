@@ -1,5 +1,5 @@
 // ไฟล์: toolsbox-backend/src/modules/jobs/dto/create-job.dto.ts
-import { IsUUID, IsString, IsIn, IsInt, Min, Max } from 'class-validator';
+import { IsUUID, IsString, IsIn, IsInt, Min, Max, IsArray, ArrayMinSize } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateImageConvertJobDto {
@@ -38,4 +38,19 @@ export class FormatCodeJobDto {
 export class CreateRemoveBgJobDto {
   @IsUUID()
   fileId: string;
+}
+
+export class CreatePdfMergeJobDto {
+  @IsArray()
+  @ArrayMinSize(2, { message: 'ต้องอัปโหลดไฟล์ PDF อย่างน้อย 2 ไฟล์เพื่อทำการรวม' })
+  @IsUUID('all', { each: true, message: 'รหัสไฟล์ไม่ถูกต้อง' })
+  fileIds: string[];
+}
+
+export class CreatePdfSplitJobDto {
+  @IsUUID()
+  fileId: string;
+
+  @IsArray()
+  pages: number[]; // รับค่าเป็น Array ของตัวเลข เช่น [1, 3, 5, 6, 7]
 }
